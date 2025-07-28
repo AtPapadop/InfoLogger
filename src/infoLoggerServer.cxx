@@ -145,6 +145,12 @@ InfoLoggerServer::InfoLoggerServer(int argc, char* argv[]) : Daemon(argc, argv)
         } else {
           log.info("DB disabled");
         }
+
+        if (configInfoLoggerServer.flbEnabled) {
+          dispatchEngines.push_back(std::make_unique<InfoLoggerDispatchFluentBit>(&configInfoLoggerServer, &log, "[FLB] "));
+        } else {
+          log.info("Fluent Bit output is disabled");
+        }
       } catch (int err) {
         printf("Failed to initialize dispatch engines: error %d\n", err);
       }

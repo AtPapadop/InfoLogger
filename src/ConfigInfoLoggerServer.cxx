@@ -38,5 +38,9 @@ void ConfigInfoLoggerServer::readFromConfigFile(ConfigFile& config)
 
   config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_SERVER ".serverPortTx", serverPortTx);
   config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_SERVER ".maxClientsTx", maxClientsTx);
+
+  config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_SERVER ".flbEnabled", flbEnabled);
+  config.getOptionalValue<std::string>(INFOLOGGER_CONFIG_SECTION_NAME_SERVER ".flbHost", flbHost);
+  config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_SERVER ".flbPort", flbPort);
 }
 

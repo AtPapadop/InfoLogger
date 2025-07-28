@@ -50,6 +50,12 @@ class ConfigInfoLoggerServer
   // settings for infoBrowser clients
   int serverPortTx = INFOLOGGER_DEFAULT_SERVER_TX_PORT;
   int maxClientsTx = 100;
+
+  // settings for Fluent Bit
+  int flbEnabled = 0;                // flag to enable/disable Fluent Bit output
+  std::string flbHost = "127.0.0.1"; // Fluent Bit host
+  int flbPort = 24224;               // Fluent Bit port
+  
 };
 
 #endif // SRC_CONFIGINFOLOGGERSERVER_H_

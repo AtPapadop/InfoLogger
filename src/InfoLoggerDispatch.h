@@ -96,5 +96,19 @@ class InfoLoggerDispatchSQL : public InfoLoggerDispatch
   std::unique_ptr<InfoLoggerDispatchSQLImpl> dPtr;
 };
 
+// a class to dispatch online messages to fluent bit
+class InfoLoggerDispatchFluentBitImpl;
+class InfoLoggerDispatchFluentBit : public InfoLoggerDispatch
+{
+ public:
+  InfoLoggerDispatchFluentBit(ConfigInfoLoggerServer* theConfig, SimpleLog* theLog, std::string prefix);
+  ~InfoLoggerDispatchFluentBit();
+  int customMessageProcess(std::shared_ptr<InfoLoggerMessageList> msg);
+  int customLoop();
+ 
+ private:
+  std::unique_ptr<InfoLoggerDispatchFluentBitImpl> dPtr;
+};
+
 #endif
 
