@@ -75,16 +75,12 @@ InfoLoggerDispatchFluentBit::InfoLoggerDispatchFluentBit(ConfigInfoLoggerServer*
   dPtr->config = theConfig;
   dPtr->log = theLog ? theLog : &defaultLog;
 
-  if (theConfig->flbEnabled) {
-    dPtr->connectSink();
-    if (dPtr->sock < 0) {
-      dPtr->log->error("Failed to connect to Fluent Bit. Please check your configuration.");
-      throw std::runtime_error("Failed to connect to Fluent Bit");
-    }
-    isReady = true;
-  } else {
-    dPtr->log->info("Fluent Bit output is disabled");
+  dPtr->connectSink();
+  if (dPtr->sock < 0) {
+    dPtr->log->error("Failed to connect to Fluent Bit. Please check your configuration.");
+    throw std::runtime_error("Failed to connect to Fluent Bit");
   }
+  isReady = true;
 }
 
 InfoLoggerDispatchFluentBit::~InfoLoggerDispatchFluentBit()
