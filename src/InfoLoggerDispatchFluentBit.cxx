@@ -100,7 +100,7 @@ int InfoLoggerDispatchFluentBit::customMessageProcess(std::shared_ptr<InfoLogger
 
   infoLog_msg_t* lmsg;
   char flbBuffer[DISPATCH_BUFFER_SIZE];
-  size_t size_m; // message size
+  size_t size_m;
   ssize_t result;
 
   for (lmsg = msg->msg; lmsg != nullptr; lmsg = lmsg->next) {
