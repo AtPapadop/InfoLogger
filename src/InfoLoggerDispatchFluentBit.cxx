@@ -22,6 +22,8 @@
 // class InfoLoggerDispatchFluentBit implementation
 ////////////////////////////////////////////////////////
 
+#define FLB_RETRY_CONNECT 1 // Fluent Bit connect retry time
+
 class InfoLoggerDispatchFluentBitImpl
 {
  public:
@@ -59,7 +61,7 @@ class InfoLoggerDispatchFluentBitImpl
     log->info("Connected to Fluent Bit at %s:%d", config->flbHost.c_str(), config->flbPort);
   }
 
-  void disconnectSink()
+  void disconnectSink() 
   {
     if (sock != -1) {
       close(sock);
@@ -77,10 +79,12 @@ InfoLoggerDispatchFluentBit::InfoLoggerDispatchFluentBit(ConfigInfoLoggerServer*
 
   dPtr->connectSink();
   if (dPtr->sock < 0) {
-    dPtr->log->error("Failed to connect to Fluent Bit. Please check your configuration.");
-    throw std::runtime_error("Failed to connect to Fluent Bit");
+    dPtr->log->warning("Failed to connect to Fluent Bit. Please check your configuration.");
   }
-  isReady = true;
+  else {
+    isReady = true;
+    dPtr->log->info("Fluent Bit dispatch initialized with prefix: %s", prefix.c_str());
+  }
 }
 
 InfoLoggerDispatchFluentBit::~InfoLoggerDispatchFluentBit()
@@ -123,7 +127,13 @@ int InfoLoggerDispatchFluentBit::customMessageProcess(std::shared_ptr<InfoLogger
 int InfoLoggerDispatchFluentBit::customLoop()
 {
   if (dPtr->sock < 0) {
+    sleep(FLB_RETRY_CONNECT);
+    dPtr->log->info("Retrying connection to Fluent Bit...");
     dPtr->connectSink();
+    if (dPtr->sock > 0) {
+      isReady = true;
+      dPtr->log->info("Connected to Fluent Bit");
+    }
   }
   return 0;
 }
