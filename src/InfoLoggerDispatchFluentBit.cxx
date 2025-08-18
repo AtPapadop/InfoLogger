@@ -82,9 +82,10 @@ InfoLoggerDispatchFluentBit::InfoLoggerDispatchFluentBit(ConfigInfoLoggerServer*
     dPtr->log->warning("Failed to connect to Fluent Bit. Please check your configuration.");
   }
   else {
-    isReady = true;
     dPtr->log->info("Fluent Bit dispatch initialized with prefix: %s", prefix.c_str());
   }
+
+  isReady = true;
 }
 
 InfoLoggerDispatchFluentBit::~InfoLoggerDispatchFluentBit()
@@ -131,7 +132,6 @@ int InfoLoggerDispatchFluentBit::customLoop()
     dPtr->log->info("Retrying connection to Fluent Bit...");
     dPtr->connectSink();
     if (dPtr->sock > 0) {
-      isReady = true;
       dPtr->log->info("Connected to Fluent Bit");
     }
   }
