@@ -34,6 +34,10 @@
 #include <sys/un.h>
 #include <sys/poll.h>
 
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/uio.h>
+
 #include <sys/stat.h>
 #include <string.h>
 
@@ -84,6 +88,11 @@ class ConfigInfoLoggerD
   // settings for output
   int outputToServer = 1; // enable output to infoLoggerServer
   int outputToLog = 0;    // enable output to log
+
+  // settings for Fluent Bit local forwarding
+  int flbEnabled = 0;              // enable output to Fluent Bit (local agent)
+  std::string flbHost = "127.0.0.1"; // Fluent Bit host
+  int flbPort = 24224;             // Fluent Bit TCP input port (default Fluent Bit forward input is 24224)
 };
 
 ConfigInfoLoggerD::ConfigInfoLoggerD()
@@ -112,6 +121,9 @@ void ConfigInfoLoggerD::readFromConfigFile(ConfigFile& config)
 
   config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_INFOLOGGERD ".outputToServer", outputToServer);
   config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_INFOLOGGERD ".outputToLog", outputToLog);
+  config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_INFOLOGGERD ".flbEnabled", flbEnabled);
+  config.getOptionalValue<std::string>(INFOLOGGER_CONFIG_SECTION_NAME_INFOLOGGERD ".flbHost", flbHost);
+  config.getOptionalValue<int>(INFOLOGGER_CONFIG_SECTION_NAME_INFOLOGGERD ".flbPort", flbPort);
 }
 
 //////////////////////////////////////////////////////
@@ -225,6 +237,15 @@ class InfoLoggerD : public Daemon
   FILE* logOutput = nullptr; // handle to local log file where to copy incoming messages, if configured to do so
 
   bool stateAcceptFailed = 0; // flag to keep track accept() failing, and avoid flooding log output with errors in case of e.g. reaching max number of open files
+  // Fluent Bit forwarding
+  int flbSocket = -1;      // socket to Fluent Bit
+  time_t flbLastRetry = 0; // last time we attempted to (re)connect
+  std::string flbPending;  // pending (partially sent) data waiting to be flushed
+
+  int connectFluentBit();
+  void disconnectFluentBit();
+  int flbFlushPending();
+  void flbSendLine(const char* data, size_t len);
 };
 
 // list of extra keys accepted on the command line (-o key=value entries)
@@ -381,6 +402,14 @@ InfoLoggerD::InfoLoggerD(int argc, char* argv[]) : Daemon(argc, argv, nullptr, E
         // todo: open a log file!
       }
 
+      // Initialize Fluent Bit forwarding if enabled
+      if (configInfoLoggerD.flbEnabled) {
+        log.info("Fluent Bit forwarding enabled (target %s:%d)", configInfoLoggerD.flbHost.c_str(), configInfoLoggerD.flbPort);
+        connectFluentBit();
+      } else {
+        log.info("Fluent Bit forwarding disabled");
+      }
+
       // check consistency of settings for max number of incoming connections
       if (1) {
         log.info("Checking resources for rxMaxConnections = %d", configInfoLoggerD.rxMaxConnections);
@@ -461,12 +490,26 @@ InfoLoggerD::~InfoLoggerD()
   if (hCx != nullptr) {
     TR_client_stop(hCx);
   }
+  disconnectFluentBit();
 }
 
 Daemon::LoopStatus InfoLoggerD::doLoop()
 {
   if (!isInitialized) {
     return LoopStatus::Error;
+  }
+
+  // Retry Fluent Bit connection (lightweight backoff: once per second if disconnected)
+  if (configInfoLoggerD.flbEnabled && flbSocket < 0) {
+    time_t now = time(nullptr);
+    if (now - flbLastRetry >= 1) {
+      flbLastRetry = now;
+      connectFluentBit();
+    }
+  }
+  // Attempt to flush any pending data to Fluent Bit (best-effort)
+  if (configInfoLoggerD.flbEnabled && flbSocket >= 0) {
+    flbFlushPending();
   }
 
   bool updateFds = false; // raise this flag to renew structure (change in client list)
@@ -538,6 +581,9 @@ Daemon::LoopStatus InfoLoggerD::doLoop()
                 if (configInfoLoggerD.outputToServer) {
                   TR_client_send_msg(hCx, client.buffer.c_str());
                 }
+                if (configInfoLoggerD.flbEnabled && flbSocket >= 0) {
+                  flbSendLine(client.buffer.c_str(), client.buffer.size());
+                }
                 client.buffer.clear();
               }
 
@@ -605,6 +651,147 @@ Daemon::LoopStatus InfoLoggerD::doLoop()
   }
 
   return LoopStatus::Ok;
+}
+
+int InfoLoggerD::connectFluentBit()
+{
+  if (!configInfoLoggerD.flbEnabled) {
+    return -1;
+  }
+  if (flbSocket != -1) {
+    return 0;
+  }
+
+  flbSocket = socket(AF_INET, SOCK_STREAM, 0);
+  if (flbSocket < 0) {
+    log.warning("Fluent Bit socket() failed: %s", strerror(errno));
+    flbSocket = -1;
+    return -1;
+  }
+
+  sockaddr_in dst{};
+  dst.sin_family = AF_INET;
+  dst.sin_port = htons(configInfoLoggerD.flbPort);
+  if (inet_pton(AF_INET, configInfoLoggerD.flbHost.c_str(), &dst.sin_addr) != 1) {
+    log.warning("Fluent Bit inet_pton failed for %s", configInfoLoggerD.flbHost.c_str());
+    close(flbSocket);
+    flbSocket = -1;
+    return -1;
+  }
+  if (connect(flbSocket, (struct sockaddr*)&dst, sizeof(dst)) < 0) {
+    log.warning("Fluent Bit connect failed: %s", strerror(errno));
+    close(flbSocket);
+    flbSocket = -1;
+    return -1;
+  }
+  // set non-blocking to avoid blocking daemon on slow Fluent Bit
+  int flags = fcntl(flbSocket, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(flbSocket, F_SETFL, flags | O_NONBLOCK);
+  }
+  log.info("Connected to Fluent Bit at %s:%d", configInfoLoggerD.flbHost.c_str(), configInfoLoggerD.flbPort);
+  return 0;
+}
+
+void InfoLoggerD::disconnectFluentBit()
+{
+  if (flbSocket != -1) {
+    close(flbSocket);
+    flbSocket = -1;
+    log.info("Disconnected from Fluent Bit");
+  }
+}
+
+int InfoLoggerD::flbFlushPending()
+{
+  if (flbPending.empty() || flbSocket < 0) {
+    return 0;
+  }
+  const char* ptr = flbPending.data();
+  size_t remaining = flbPending.size();
+  while (remaining) {
+    ssize_t r = send(flbSocket, ptr, remaining, MSG_NOSIGNAL);
+    if (r > 0) {
+      ptr += r;
+      remaining -= (size_t)r;
+    } else if (r < 0 && (errno == EINTR)) {
+      continue; // retry
+    } else if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      // keep remaining for later flush
+      break;
+    } else {
+      log.warning("Fluent Bit send (flush) failed: %s", strerror(errno));
+      disconnectFluentBit();
+      flbPending.clear();
+      return -1;
+    }
+  }
+  if (remaining == 0) {
+    flbPending.clear();
+  } else {
+    // shrink to remaining part
+    flbPending.erase(0, flbPending.size() - remaining);
+  }
+  return 0;
+}
+
+void InfoLoggerD::flbSendLine(const char* data, size_t len)
+{
+  if (flbSocket < 0 || data == NULL) {
+    return;
+  }
+  // If previous data pending, try flushing first; if still pending append new line to queue.
+  if (!flbPending.empty()) {
+    flbFlushPending();
+    if (!flbPending.empty()) {
+      // still busy, queue new line (with newline ensured) and return
+      flbPending.append(data, len);
+      if (len == 0 || data[len - 1] != '\n') {
+        flbPending.push_back('\n');
+      }
+      return;
+    }
+  }
+
+  bool needNl = (len == 0 || data[len - 1] != '\n');
+  struct iovec iov[2];
+  int iovcnt = 0;
+  if (len) {
+    iov[iovcnt].iov_base = (void*)data;
+    iov[iovcnt].iov_len = len;
+    iovcnt++;
+  }
+  char nl = '\n';
+  if (needNl) {
+    iov[iovcnt].iov_base = &nl;
+    iov[iovcnt].iov_len = 1;
+    iovcnt++;
+  }
+  size_t total = len + (needNl ? 1 : 0);
+  ssize_t r = writev(flbSocket, iov, iovcnt);
+  if (r == (ssize_t)total) {
+    return; // fast path: all sent
+  }
+  if (r < 0) {
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+      // queue whole data
+      flbPending.append(data, len);
+      if (needNl) flbPending.push_back('\n');
+      return;
+    }
+    log.warning("Fluent Bit send failed: %s", strerror(errno));
+    disconnectFluentBit();
+    return;
+  }
+  // Partial send: queue remaining tail
+  size_t sent = (size_t)r;
+  if (sent < len) {
+    flbPending.append(data + sent, len - sent);
+    if (needNl) flbPending.push_back('\n');
+  } else if (needNl && sent == len) {
+    // only newline left
+    flbPending.push_back('\n');
+  }
 }
 
 //////////////////////////////////////////////////////
